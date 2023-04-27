@@ -43,7 +43,7 @@ from .common import (
     FailedPayloadsError, KafkaError, KafkaUnavailableError,
     LeaderUnavailableError, NotCoordinator, NotLeaderForPartitionError,
     PartitionUnavailableError, RequestTimedOutError, TopicAndPartition,
-    UnknownTopicOrPartitionError, _pretty_errno,
+    UnknownTopicOrPartitionError, _pretty_errno, PartitionMetadata,
 )
 from .kafkacodec import KafkaCodec, _ReprRequest
 

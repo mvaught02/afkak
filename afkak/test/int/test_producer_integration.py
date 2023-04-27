@@ -18,6 +18,7 @@ import logging
 import time
 from unittest import skipUnless
 
+import pytest
 from twisted.internet.defer import inlineCallbacks
 from twisted.trial import unittest
 
@@ -115,6 +116,22 @@ class TestAfkakProducerIntegration(IntegrationMixin, unittest.TestCase):
             start_offset,
             10000,
         )
+
+    @pytest.mark.skip(reason="WIP not yet implemented")
+    @kafka_versions("1.1.1", "2.3.0", "3.1.0")
+    @inlineCallbacks
+    def test_produce_with_timestamp(self):
+        start_offset = yield self.current_offset(self.topic, 0)
+        message = [create_message(b"Test message with ts", timestamp=int(time.time() * 1000))]
+
+        yield self.assert_produce_request(message, start_offset, 1)
+
+        yield self.assert_fetch_offset(0, start_offset, [b"Test message with ts"], expect_timestamps=True)
+
+
+
+
+
 
     @kafka_versions("all")
     @inlineCallbacks
@@ -644,7 +661,7 @@ class TestAfkakProducerIntegration(IntegrationMixin, unittest.TestCase):
 
     @inlineCallbacks
     def assert_fetch_offset(self, partition, start_offset,
-                            expected_messages, expected_keys=(),
+                            expected_messages, expected_keys=(), expect_timestamps=False,
                             max_wait=0.5, fetch_size=1024, topic=None):
         # There should only be one response message from the server.
         # This will throw an exception if there's more than one.
@@ -663,5 +680,10 @@ class TestAfkakProducerIntegration(IntegrationMixin, unittest.TestCase):
         if expected_keys:
             keys = [x.message.key for x in resp_messages]
             self.assertEqual(keys, expected_keys)
+        if expect_timestamps:
+            timestamps = [x.message.timestamp for x in resp_messages]
+            print(resp_messages)
+            print(timestamps)
+            self.assertTrue(all(timestamps))
         self.assertEqual(
             resp.highwaterMark, start_offset+len(expected_messages))

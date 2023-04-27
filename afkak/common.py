@@ -15,8 +15,11 @@
 # limitations under the License.
 
 from collections import namedtuple
+from typing import List
 
 import attr
+import attrs
+from twisted.internet.defer import Deferred
 
 # Constants
 DefaultKafkaPort = 9092
@@ -42,56 +45,165 @@ _ALL_CODECS = (CODEC_NONE, CODEC_GZIP, CODEC_SNAPPY)
 #   Structs   #
 ###############
 # SendRequest is used to encapsulate messages and keys prior to
-# creating a message set
-SendRequest = namedtuple(
-    "SendRequest", ["topic", "key", "messages", "deferred"])
+# creating a message set.
+
+
+@attr.frozen(hash=False, eq=False)
+class BaseStruct:
+    """
+    Base class for all structs.
+
+    This class behaves like a tuple to maintain backwards compatibility
+    """
+
+    def __iter__(self):
+        return iter(attr.astuple(self, recurse=False))
+
+    def __getitem__(self, item):
+        return attr.astuple(self)[item]
+
+    def __len__(self):
+        return len(attr.astuple(self))
+
+    def __eq__(self, other):
+        if isinstance(other, self.__class__):
+            return attr.astuple(self) == attr.astuple(other)
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(attr.astuple(self))
+
+    def __lt__(self, other):
+        if isinstance(other, self.__class__):
+            return attr.astuple(self) < attr.astuple(other)
+        return NotImplemented
+
+
+@attr.s(frozen=True, slots=True)
+class SendRequest(BaseStruct):
+    topic: str = attr.ib()
+    key: bytes = attr.ib(default=None)
+    messages: list = attr.ib(default=None)
+    deferred: Deferred = attr.ib(default=None)
+
 
 # Request payloads
-ProduceRequest = namedtuple("ProduceRequest",
-                            ["topic", "partition", "messages"])
+@attr.s(frozen=True, slots=True)
+class ProduceRequest(BaseStruct):
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    messages: List[bytes] = attr.ib(default=None)
+    timestamp: int = attr.ib(default=None)
 
-FetchRequest = namedtuple("FetchRequest",
-                          ["topic", "partition", "offset", "max_bytes"])
 
-OffsetRequest = namedtuple("OffsetRequest",
-                           ["topic", "partition", "time", "max_offsets"])
+# Request payloads
 
-# This is currently for the API_Version=1
-OffsetCommitRequest = namedtuple("OffsetCommitRequest",
-                                 ["topic", "partition", "offset", "timestamp",
-                                  "metadata"])
 
-OffsetFetchRequest = namedtuple("OffsetFetchRequest", ["topic", "partition"])
+@attr.s(frozen=True, slots=True)
+class FetchRequest(BaseStruct):
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    offset: int = attr.ib()
+    max_bytes: int = attr.ib(default=None)
+
+
+@attr.s(frozen=True, slots=True)
+class OffsetRequest(BaseStruct):
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    time: int = attr.ib(default=None)
+    max_offsets: int = attr.ib(default=None)
+
+
+@attr.s(frozen=True, slots=True)
+class OffsetCommitRequest(BaseStruct):
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    offset: int = attr.ib()
+    timestamp: int = attr.ib(default=None)
+    metadata: bytes = attr.ib(default=None)
+
+
+@attr.s(frozen=True, slots=True)
+class OffsetFetchRequest(BaseStruct):
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    timestamp: int = attr.ib(default=None)
+
 
 # Response payloads
-ProduceResponse = namedtuple("ProduceResponse",
-                             ["topic", "partition", "error", "offset"])
+@attr.s(frozen=True, slots=True)
+class ProduceResponse(BaseStruct):
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    error: int = attr.ib()
+    offset: int = attr.ib()
 
-FetchResponse = namedtuple("FetchResponse", ["topic", "partition", "error",
-                                             "highwaterMark", "messages"])
 
-OffsetResponse = namedtuple("OffsetResponse",
-                            ["topic", "partition", "error", "offsets"])
+@attr.s(frozen=True, slots=True)
+class FetchResponse(BaseStruct):
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    error: int = attr.ib()
+    highwaterMark: int = attr.ib()
+    messages: list = attr.ib()
 
-OffsetCommitResponse = namedtuple("OffsetCommitResponse",
-                                  ["topic", "partition", "error"])
 
-OffsetFetchResponse = namedtuple("OffsetFetchResponse",
-                                 ["topic", "partition", "offset",
-                                  "metadata", "error"])
+@attr.s(frozen=True, slots=True)
+class OffsetResponse(BaseStruct):
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    error: int = attr.ib()
+    offsets: list = attr.ib()
 
-ConsumerMetadataResponse = namedtuple("ConsumerMetadataResponse",
-                                      ["error", "node_id", "host", "port"])
+
+@attr.s(frozen=True, slots=True)
+class OffsetCommitResponse(BaseStruct):
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    error: int = attr.ib()
+
+
+@attr.s(frozen=True, slots=True)
+class OffsetFetchResponse(BaseStruct):
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    offset: int = attr.ib()
+    metadata: bytes = attr.ib()
+    error: int = attr.ib()
+
+
+@attr.s(frozen=True, slots=True)
+class ConsumerMetadataResponse(BaseStruct):
+    error: int = attr.ib()
+    node_id: int = attr.ib()
+    host: str = attr.ib()
+    port: int = attr.ib()
+
 
 # Metadata tuples
-BrokerMetadata = namedtuple("BrokerMetadata", ["node_id", "host", "port"])
+@attr.s(frozen=True, slots=True)
+class BrokerMetadata(BaseStruct):
+    node_id: int = attr.ib()
+    host: str = attr.ib()
+    port: int = attr.ib()
 
-TopicMetadata = namedtuple("TopicMetadata", ["topic", "topic_error_code",
-                                             "partition_metadata"])
 
-PartitionMetadata = namedtuple("PartitionMetadata",
-                               ["topic", "partition", "partition_error_code",
-                                "leader", "replicas", "isr"])
+@attr.s(frozen=True, slots=True)
+class TopicMetadata(BaseStruct):
+    topic: str = attr.ib()
+    topic_error_code: int = attr.ib()
+    partition_metadata: bytearray = attr.ib()
+
+
+@attr.s(frozen=True, slots=True)
+class PartitionMetadata(BaseStruct):
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    partition_error_code: int = attr.ib()
+    leader: int = attr.ib()
+    replicas: list = attr.ib()
+    isr: list = attr.ib()
 
 
 # Requests and responses for consumer groups
@@ -113,6 +225,7 @@ class _JoinGroupRequest(object):
     """
     A request to join a coordinator group.
     """
+
     group = attr.ib()
     session_timeout = attr.ib()
     member_id = attr.ib()
@@ -163,39 +276,79 @@ class _SyncGroupResponse(object):
     member_assignment = attr.ib()
 
 
-_HeartbeatRequest = namedtuple("_HeartbeatRequest", ["group", "generation_id", "member_id"])
-_HeartbeatResponse = namedtuple("_HeartbeatResponse", ["error"])
+@attr.s(frozen=True, slots=True)
+class _HeartbeatRequest(BaseStruct):
+    group: str = attr.ib()
+    generation_id: int = attr.ib()
+    member_id: str = attr.ib()
 
-_LeaveGroupRequest = namedtuple("_LeaveGroupRequest", ["group", "member_id"])
-_LeaveGroupResponse = namedtuple("_LeaveGroupResponse", ["error"])
+
+@attr.s(frozen=True, slots=True)
+class _HeartbeatResponse(BaseStruct):
+    error: int = attr.ib()
+
+
+@attr.s(frozen=True, slots=True)
+class _LeaveGroupRequest(BaseStruct):
+    group: str = attr.ib()
+    member_id: str = attr.ib()
+
+
+@attr.s(frozen=True, slots=True)
+class _LeaveGroupResponse(BaseStruct):
+    error: int = attr.ib()
+
 
 # Other useful structs
-OffsetAndMessage = namedtuple("OffsetAndMessage", ["offset", "message"])
+@attr.s(frozen=True, slots=True)
+class OffsetAndMessage(BaseStruct):
+    offset: int = attr.ib()
+    message: bytes = attr.ib()
 
 
-TopicAndPartition = namedtuple("TopicAndPartition", ["topic", "partition"])
-SourcedMessage = namedtuple(
-    "SourcedMessage", TopicAndPartition._fields + OffsetAndMessage._fields)
+@attr.s(frozen=True, slots=True)
+class TopicAndPartition(BaseStruct):
+    topic: str = attr.ib()
+    partition: int = attr.ib()
 
 
-class Message(namedtuple("Message", ["magic", "attributes", "key", "value"])):
+@attr.s(frozen=True, slots=True)
+class SourcedMessage(BaseStruct):
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    offset: int = attr.ib()
+    message: bytes = attr.ib()
+
+
+@attr.frozen(hash=False, eq=False, repr=False)
+class Message:
     """
-    A Kafka `message`_ in format 0.
+    A Kafka `message`_ in format 0 or 1.
 
-    :ivar int magic: Message format version, always 0.
+    :ivar int magic: Message format version, always 0 or 1.
     :ivar int attributes: Compression flags.
     :ivar bytes key:
         Message key, or ``None`` when the message lacks a key.
         Note that the key is required on a compacted topic.
     :ivar bytes value:
         Message value, or ``None`` if this is a tombstone a.k.a. null message.
+    :ivar int timestamp:
+        The timestamp of the message in milliseconds since epoch.
+    :ivar int timestamp_type:
+        The type of the timestamp (0 for CreateTime, 1 for LogAppendTime).
 
     .. _message: https://kafka.apache.org/documentation/#messageset
     """
-    __slots__ = ()
+
+    magic: int = attr.ib(default=0)
+    attributes: int = attr.ib(default=0)
+    key: bytes = attr.ib(default=None)
+    value: bytes = attr.ib(default=None)
+    timestamp: int = attr.ib(default=None)
+    timestamp_type: int = attr.ib(default=0)
 
     def __repr__(self):
-        bits = ['<Message v0']
+        bits = ['<Message v{}'.format(self.magic)]
 
         if self.attributes != 0:
             if self.attributes == CODEC_GZIP:
@@ -208,16 +361,38 @@ class Message(namedtuple("Message", ["magic", "attributes", "key", "value"])):
                 codec = ' attributes=0x{:x}'.format(self.attributes)
             bits.append(codec)
 
+        if self.timestamp is not None:
+            bits.append(' timestamp={}'.format(self.timestamp))
+            bits.append(' timestamp_type={}'.format(self.timestamp_type))
+
         if self.key is not None:
             bits.append(' key={!r}'.format(self.key))
 
         if self.value is None or len(self.value) < 1024:
             bits.append(' value={!r}'.format(self.value))
         else:
-            bits.append(' value={:,d} bytes {!r}...'.format(len(self.value), self.value[:512]))
+            bits.append(
+                ' value={:,d} bytes {!r}...'.format(len(self.value), self.value[:512])
+            )
 
         bits.append('>')
         return ''.join(bits)
+
+    def __hash__(self):
+        return hash(attrs.astuple(self))
+
+    def __eq__(self, other):
+        if not isinstance(other, Message):
+            return NotImplemented
+        if isinstance(other, tuple):
+            return attrs.astuple(self) == other
+        return attrs.astuple(self) == attrs.astuple(other)
+
+    def __iter__(self):
+        return iter(attrs.astuple(self))
+
+    def __getitem__(self, item):
+        return attrs.astuple(self)[item]
 
 
 #################
@@ -233,6 +408,7 @@ class ClientError(KafkaError):
     """
     Generic error when the client detects an error
     """
+
     pass
 
 
@@ -240,6 +416,7 @@ class RestartError(ClientError):
     """
     Raised when a consumer start() call is made on an already running consumer
     """
+
     pass
 
 
@@ -248,6 +425,7 @@ class RestopError(ClientError):
     Raised when a consumer stop() or shutdown() call is made on a
     non-running consumer
     """
+
     pass
 
 
@@ -277,6 +455,7 @@ class BrokerResponseError(KafkaError):
 
     .. _error code: https://kafka.apache.org/protocol.html#protocol_error_codes
     """
+
     retriable = False
     message = None
 
@@ -316,6 +495,7 @@ class RetriableBrokerResponseError(BrokerResponseError):
     `RetriableBrokerResponseError` is the shared superclass of all broker
     errors which can be retried.
     """
+
     retriable = True
 
 
@@ -429,6 +609,7 @@ class InvalidTopic(BrokerResponseError):
     The request specified an illegal topic name. The name is either malformed
     or references an internal topic for which the operation is not valid.
     """
+
     errno = 17
     message = "INVALID_TOPIC_EXCEPTION"
 
@@ -438,6 +619,7 @@ class RecordListTooLarge(BrokerResponseError):
     The produce request message batch exceeds the maximum configured segment
     size.
     """
+
     errno = 18
     message = "RECORD_LIST_TOO_LARGE"
 
@@ -447,6 +629,7 @@ class NotEnoughReplicas(RetriableBrokerResponseError):
     The number of in-sync replicas is lower than can satisfy the number of acks
     required by the produce request.
     """
+
     errno = 19
     message = "NOT_ENOUGH_REPLICAS"
 
@@ -456,6 +639,7 @@ class NotEnoughReplicasAfterAppend(RetriableBrokerResponseError):
     The produce request was written to the log, but not by as many in-sync
     replicas as it required.
     """
+
     errno = 20
     message = "NOT_ENOUGH_REPLICAS_AFTER_APPEND"
 
@@ -743,6 +927,7 @@ class FailedPayloadsError(KafkaError):
     :ivar list responses: Any successful responses.
     :ivar list failed_payloads: Two-tuples of (payload, failure).
     """
+
     responses = property(lambda self: self.args[0])
     failed_payloads = property(lambda self: self.args[1])
 

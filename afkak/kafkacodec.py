@@ -188,15 +188,25 @@ class KafkaCodec(object):
         """
         Encode a single message.
 
-        The magic number of a message is a format version number.  The only
-        supported magic number right now is zero.  Format::
+        The magic number of a message is a format version number.
+        Format::
 
+            v0::
             Message => Crc MagicByte Attributes Key Value
               Crc => int32
               MagicByte => int8
               Attributes => int8
               Key => bytes
               Value => bytes
+
+            v1::
+            Message => Crc MagicByte Attributes Timestamp Key Value
+                Crc => int32
+                MagicByte => int8
+                Attributes => int8
+                Timestamp => int64
+                Key => bytes
+                Value => bytes
         """
         if message.magic == 0:
             msg = struct.pack('>BB', message.magic, message.attributes)
@@ -204,8 +214,16 @@ class KafkaCodec(object):
             msg += write_int_string(message.value)
             crc = zlib.crc32(msg) & 0xffffffff  # Ensure unsigned
             msg = struct.pack('>I', crc) + msg
+        elif message.magic == 1:
+            msg = struct.pack('>BBq', message.magic, message.attributes,
+                                message.timestamp)
+            msg += write_int_string(message.key)
+            msg += write_int_string(message.value)
+            crc = zlib.crc32(msg) & 0xffffffff
+            msg = struct.pack('>I', crc) + msg
         else:
             raise ProtocolError("Unexpected magic number: %d" % message.magic)
+
         return msg
 
     @classmethod
@@ -258,26 +276,53 @@ class KafkaCodec(object):
         if crc != zlib.crc32(data[4:]) & 0xffffffff:
             raise ChecksumError("Message checksum failed")
 
-        (key, cur) = read_int_string(data, cur)
-        (value, cur) = read_int_string(data, cur)
+        if magic == 0:
+            (key, cur) = read_int_string(data, cur)
+            (value, cur) = read_int_string(data, cur)
 
-        codec = att & ATTRIBUTE_CODEC_MASK
+            codec = att & ATTRIBUTE_CODEC_MASK
 
-        if codec == CODEC_NONE:
-            yield (offset, Message(magic, att, key, value))
+            if codec == CODEC_NONE:
+                yield (offset, Message(magic, att, key, value))
 
-        elif codec == CODEC_GZIP:
-            gz = gzip_decode(value)
-            for (offset, msg) in KafkaCodec._decode_message_set_iter(gz):
-                yield (offset, msg)
+            elif codec == CODEC_GZIP:
+                gz = gzip_decode(value)
+                for (offset, msg) in KafkaCodec._decode_message_set_iter(gz):
+                    yield (offset, msg)
 
-        elif codec == CODEC_SNAPPY:
-            snp = snappy_decode(value)
-            for (offset, msg) in KafkaCodec._decode_message_set_iter(snp):
-                yield (offset, msg)
+            elif codec == CODEC_SNAPPY:
+                snp = snappy_decode(value)
+                for (offset, msg) in KafkaCodec._decode_message_set_iter(snp):
+                    yield offset, msg
+
+            else:
+                raise ProtocolError('Unsupported codec 0b{:b}'.format(codec))
+
+        elif magic == 1:
+            ((timestamp, timestamp_type), cur) = relative_unpack('>qb', data, cur)
+            (key, cur) = read_int_string(data, cur)
+            (value, cur) = read_int_string(data, cur)
+
+            codec = att & ATTRIBUTE_CODEC_MASK
+
+            if codec == CODEC_NONE:
+                yield (offset, Message(magic, att, key, value, timestamp, timestamp_type))
+
+            elif codec == CODEC_GZIP:
+                gz = gzip_decode(value)
+                for (offset, msg) in KafkaCodec._decode_message_set_iter(gz):
+                    yield (offset, msg)
+
+            elif codec == CODEC_SNAPPY:
+                snp = snappy_decode(value)
+                for (offset, msg) in KafkaCodec._decode_message_set_iter(snp):
+                    yield offset, msg
+
+            else:
+                raise ProtocolError('Unsupported codec 0b{:b}'.format(codec))
 
         else:
-            raise ProtocolError('Unsupported codec 0b{:b}'.format(codec))
+            raise ProtocolError('Unknown magic: %d' % magic)
 
     ##################
     #   Public API   #
@@ -859,7 +904,7 @@ class KafkaCodec(object):
         return _SyncGroupMemberAssignment(version, assignments, user_data)
 
 
-def create_message(payload, key=None):
+def create_message(payload, key=None, timestamp=None):
     """
     Construct a :class:`Message`
 
@@ -868,10 +913,16 @@ def create_message(payload, key=None):
     :param key: A key used to route the message when partitioning and to
         determine message identity on a compacted topic.
     :type key: :class:`bytes` or ``None``
+    :param timestamp: The timestamp of the message. Default is None using message protocol v0. If set message protocol v1 will be used.
+    :type timestamp: :class:`int` or ``None``
     """
     assert payload is None or isinstance(payload, bytes), 'payload={!r} should be bytes or None'.format(payload)
     assert key is None or isinstance(key, bytes), 'key={!r} should be bytes or None'.format(key)
-    return Message(0, 0, key, payload)
+    assert timestamp is None or isinstance(timestamp, int), 'timestamp={!r} should be int or None'.format(timestamp)
+    if timestamp is None:
+        return Message(0, 0, key, payload)
+    else:
+        return Message(1, 0, key, payload, timestamp=timestamp)
 
 
 def create_gzip_message(message_set):

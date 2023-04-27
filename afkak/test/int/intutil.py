@@ -42,7 +42,7 @@ __all__ = [
 
 
 def stat(key, value):
-    print("##teamcity[buildStatisticValue key='{}' value='{}']".format(
+    print("key='{}' value='{}']".format(
         key, value), file=sys.stderr)
 
 

@@ -212,7 +212,7 @@ class TestKafkaCodec(TestCase):
     def test_encode_message_failure(self):
         self.assertRaises(ProtocolError,
                           KafkaCodec._encode_message,
-                          Message(1, 0, "key", "test"))
+                          Message(2, 0, "key", "test"))
 
     def test_encode_message_set(self):
         message_set = [
