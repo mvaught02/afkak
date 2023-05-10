@@ -14,9 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections import namedtuple
+from typing import List
 
 import attr
+from twisted.internet.defer import Deferred
 
 # Constants
 DefaultKafkaPort = 9092
@@ -41,56 +42,367 @@ _ALL_CODECS = (CODEC_NONE, CODEC_GZIP, CODEC_SNAPPY)
 ###############
 #   Structs   #
 ###############
+
+
+@attr.frozen(hash=False, eq=False)
+class BaseStruct:
+    """
+    Base class for all structs.
+    This class behaves like a tuple to maintain backwards compatibility
+    """
+
+    def __iter__(self):
+        return iter(attr.astuple(self, recurse=False))
+
+    def __getitem__(self, item):
+        return attr.astuple(self)[item]
+
+    def __len__(self):
+        return len(attr.astuple(self))
+
+    def __eq__(self, other):
+        if isinstance(other, self.__class__):
+            return attr.astuple(self) == attr.astuple(other)
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(attr.astuple(self))
+
+    def __lt__(self, other):
+        if isinstance(other, self.__class__):
+            return attr.astuple(self) < attr.astuple(other)
+        return NotImplemented
+
+
 # SendRequest is used to encapsulate messages and keys prior to
 # creating a message set
-SendRequest = namedtuple("SendRequest", ["topic", "key", "messages", "deferred"])
+@attr.frozen
+class SendRequest(BaseStruct):
+    """
+    Represents a request to send a message to a Kafka topic.
+
+    :ivar str topic: The name of the topic.
+    :ivar bytes, optional key: The key to include in the request. Defaults to None.
+    :ivar List[bytes], optional messages: The messages to include in the request. Defaults to None.
+    :ivar Deferred, optional deferred: The `Deferred` object to fire when the request is complete. Defaults to None.
+
+    :note: The `key` and `messages` fields are optional and can be None if no messages need to be sent. If messages
+        are included, they should be bytes objects representing the message payload.
+    """
+
+    topic: str = attr.ib()
+    key: bytes = attr.ib(default=None)
+    messages: list = attr.ib(default=None)
+    deferred: Deferred = attr.ib(default=None)
+
 
 # Request payloads
-ProduceRequest = namedtuple("ProduceRequest", ["topic", "partition", "messages"])
+@attr.frozen
+class ProduceRequest(BaseStruct):
+    """
+    Represents a request to produce one or more messages to a Kafka topic and partition.
 
-FetchRequest = namedtuple("FetchRequest", ["topic", "partition", "offset", "max_bytes"])
+    :ivar str topic: The name of the topic.
+    :ivar int partition: The partition to produce to.
+    :ivar List[bytes], optional messages: The messages to include in the request. Defaults to None.
 
-OffsetRequest = namedtuple("OffsetRequest", ["topic", "partition", "time", "max_offsets"])
+    :note: The `messages` field is optional and can be an empty list if no messages need to be produced. If messages
+        are included, they should be bytes objects representing the message payload.
+    """
 
-# This is currently for the API_Version=1
-OffsetCommitRequest = namedtuple("OffsetCommitRequest", ["topic", "partition", "offset", "timestamp", "metadata"])
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    messages: List[bytes] = attr.ib(default=None)
 
-OffsetFetchRequest = namedtuple("OffsetFetchRequest", ["topic", "partition"])
+
+# Request payloads
+
+
+@attr.frozen
+class FetchRequest(BaseStruct):
+    """
+    Request to fetch a set of messages from a topic/partition
+
+    :ivar str topic: The topic this request is for
+    :ivar int partition: The partition this request is for
+    :ivar int offset: The offset to use for this request
+    :ivar int max_bytes: The maximum number of bytes to include in the response
+
+    :note: The `max_bytes` field is optional and can be None if no messages need to be fetched.
+    """
+
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    offset: int = attr.ib()
+    max_bytes: int = attr.ib(default=None)
+
+
+@attr.frozen
+class OffsetRequest(BaseStruct):
+    """
+    Request to fetch the last committed offset for a set of partitions
+
+    :ivar str topic: The topic this request is for
+    :ivar int partition: The partition this request is for
+    :ivar int time: Time to use for fetching offsets. Specify -1 to receive the latest offsets and -2 to receive
+        the earliest available offsets. Defaults to -1.
+    :ivar int max_offsets: Maximum number of offsets to return. Defaults to 1.
+
+    :note: The `time` and `max_offsets` fields are optional and can be None if no messages need to be fetched.
+    """
+
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    time: int = attr.ib(default=-1)
+    max_offsets: int = attr.ib(default=1)
+
+
+@attr.frozen
+class OffsetCommitRequest(BaseStruct):
+    """
+    Request to commit a specific offset for a topic/partition
+
+    :ivar str topic: The topic this request is for
+    :ivar int partition: The partition this request is for
+    :ivar int offset: The offset to commit
+    :ivar int timestamp: The timestamp of the commit
+    :ivar bytes metadata: Any associated metadata the client wants to keep
+
+    :note: The `timestamp` and `metadata` fields are optional and can be None if no messages need to be fetched.
+    """
+
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    offset: int = attr.ib()
+    timestamp: int = attr.ib(default=None)
+    metadata: bytes = attr.ib(default=None)
+
+
+@attr.frozen
+class OffsetFetchRequest(BaseStruct):
+    """
+    Request to fetch the last committed offset for a set of partitions
+
+    :ivar str topic: The topic this request is for
+    :ivar int partition: The partition this request is for
+    """
+
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+
 
 # Response payloads
-ProduceResponse = namedtuple("ProduceResponse", ["topic", "partition", "error", "offset"])
+@attr.frozen
+class ProduceResponse(BaseStruct):
+    """
+    Response from a ProduceRequest
 
-FetchResponse = namedtuple("FetchResponse", ["topic", "partition", "error", "highwaterMark", "messages"])
+    :ivar str topic: The topic this response entry is for
+    :ivar int partition: The partition this response entry is for
+    :ivar int error: The error code for this request
+    :ivar int offset: The offset of the message in the partition
+    """
 
-OffsetResponse = namedtuple("OffsetResponse", ["topic", "partition", "error", "offsets"])
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    error: int = attr.ib()
+    offset: int = attr.ib()
 
-OffsetCommitResponse = namedtuple("OffsetCommitResponse", ["topic", "partition", "error"])
 
-OffsetFetchResponse = namedtuple("OffsetFetchResponse", ["topic", "partition", "offset", "metadata", "error"])
+@attr.frozen
+class FetchResponse(BaseStruct):
+    """
+    Response from a FetchRequest
 
-ConsumerMetadataResponse = namedtuple("ConsumerMetadataResponse", ["error", "node_id", "host", "port"])
+    :ivar str topic: The topic this response entry is for
+    :ivar int partition: The partition this response entry is for
+    :ivar int error: The error code for this request
+    :ivar int highwaterMark: The offset of the last message in the partition
+    :ivar List[Message]: The messages returned by the request
+
+    """
+
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    error: int = attr.ib()
+    highwaterMark: int = attr.ib()
+    messages: List['Message'] = attr.ib()
+
+
+@attr.frozen
+class OffsetResponse(BaseStruct):
+    """
+    Response from an OffsetRequest
+
+    :ivar str topic: The topic this response entry is for
+    :ivar int partition: The partition this response entry is for
+    :ivar int error: The error code for this request
+    :ivar List[int] offsets: The offsets returned by the request
+    """
+
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    error: int = attr.ib()
+    offsets: List[int] = attr.ib()
+
+
+@attr.frozen
+class OffsetCommitResponse(BaseStruct):
+    """
+    Response from an OffsetCommitRequest
+
+    :ivar str topic: The topic this response entry is for
+    :ivar int partition: The partition this response entry is for
+    :ivar int error: The error code for this request
+    """
+
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    error: int = attr.ib()
+
+
+@attr.frozen
+class OffsetFetchResponse(BaseStruct):
+    """
+    Response from an OffsetFetchRequest
+
+    :ivar str topic: The topic this response entry is for
+    :ivar int partition: The partition this response entry is for
+    :ivar int offset: The offset returned by the request
+    :ivar bytes metadata: The metadata returned by the request
+    :ivar int error: The error code for this request
+    """
+
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    offset: int = attr.ib()
+    metadata: bytes = attr.ib()
+    error: int = attr.ib()
+
+
+@attr.frozen
+class ConsumerMetadataResponse(BaseStruct):
+    """
+    Response from a ConsumerMetadataRequest
+
+    :ivar int error: The error code for this request
+    :ivar int node_id: The node id for the coordinator
+    :ivar str host: The hostname of the coordinator
+    :ivar int port: The port for the coordinator
+
+    """
+
+    error: int = attr.ib()
+    node_id: int = attr.ib()
+    host: str = attr.ib()
+    port: int = attr.ib()
+
 
 # Metadata tuples
-BrokerMetadata = namedtuple("BrokerMetadata", ["node_id", "host", "port"])
+@attr.frozen
+class BrokerMetadata(BaseStruct):
+    """
+    Metadata for a single broker
 
-TopicMetadata = namedtuple("TopicMetadata", ["topic", "topic_error_code", "partition_metadata"])
+    :ivar int node_id: The node id for this broker
+    :ivar str host: The hostname of this broker
+    :ivar int port: The port for this broker
+    """
 
-PartitionMetadata = namedtuple(
-    "PartitionMetadata",
-    ["topic", "partition", "partition_error_code", "leader", "replicas", "isr"],
-)
+    node_id: int = attr.ib()
+    host: str = attr.ib()
+    port: int = attr.ib()
+
+
+@attr.frozen
+class TopicMetadata(BaseStruct):
+    """
+    Metadata for a single topic
+
+    :ivar str topic: The topic name
+    :ivar int topic_error_code: The error code for this topic
+    :ivar List[PartitionMetadata] partition_metadata: The set of partitions for this topic
+
+    """
+
+    topic: str = attr.ib()
+    topic_error_code: int = attr.ib()
+    partition_metadata: List[bytes] = attr.ib()
+
+
+@attr.frozen
+class PartitionMetadata(BaseStruct):
+    """
+    Metadata for a single partition
+
+    :ivar str topic: The topic name
+    :ivar int partition: The partition id
+    :ivar int partition_error_code: The error code for this partition
+    :ivar int leader: The node id for the leader of this partition
+    :ivar List[int] replicas: The set of replica nodes for this partition
+    :ivar List[int] isr: The set of in-sync replica nodes for this partition
+    """
+
+    topic: str = attr.ib()
+    partition: int = attr.ib()
+    partition_error_code: int = attr.ib()
+    leader: int = attr.ib()
+    replicas: list = attr.ib()
+    isr: list = attr.ib()
+
+
+# ApiVersionRequest and ApiVersionResponse
+@attr.frozen
+class ApiVersionRequest(BaseStruct):
+    """
+    Request to discover supported API versions
+
+    :ivar int api_key: The API key to use
+    :ivar int api_version: The API version to use
+    """
+
+    api_key: int = attr.ib()
+    api_version: int = attr.ib()
+
+
+@attr.frozen
+class ApiVersionResponse(BaseStruct):
+    """
+    Response from an ApiVersionRequest
+
+    :ivar int error_code: The error code for this request
+    :ivar List[ApiVersion] api_versions: The supported API versions
+    """
+
+    error_code: int = attr.ib()
+    api_versions: list = attr.ib()
 
 
 # Requests and responses for consumer groups
 @attr.s(frozen=True, slots=True)
 class _JoinGroupRequestProtocol(object):
+    """
+    A protocol that the consumer supports.
+
+    :ivar str protocol_name: The name of the protocol
+    :ivar bytes protocol_metadata: Any additional metadata that the consumer wants to send to the group coordinator
+    """
+
     protocol_name = attr.ib()
     protocol_metadata = attr.ib()
 
 
 @attr.s(frozen=True, slots=True)
 class _JoinGroupProtocolMetadata(object):
-    verison = attr.ib()
+    """
+    The metadata for a protocol that the consumer supports.
+
+    :ivar str version: The version of the protocol
+    :ivar List[_JoinGroupRequestProtocol] subscriptions: The list of protocols that the consumer supports
+    :ivar bytes user_data: Any additional metadata that the consumer wants to send to the group coordinator
+    """
+
+    version = attr.ib()
     subscriptions = attr.ib()
     user_data = attr.ib()
 
@@ -99,6 +411,14 @@ class _JoinGroupProtocolMetadata(object):
 class _JoinGroupRequest(object):
     """
     A request to join a coordinator group.
+
+    :ivar str group: The name of the group to join
+    :ivar int session_timeout: The time in milliseconds that the coordinator will wait for the consumer to send a
+        JoinGroupResponse
+    :ivar str member_id: The unique identifier for the consumer. This is generated by the consumer and should be
+        unique across all consumers.
+    :ivar str protocol_type: The unique name for class of protocols implemented by the consumer
+    :ivar List[_JoinGroupProtocolMetadata] group_protocols: The list of protocols that the consumer supports
     """
 
     group = attr.ib()
@@ -110,12 +430,32 @@ class _JoinGroupRequest(object):
 
 @attr.s(frozen=True, slots=True)
 class _JoinGroupResponseMember(object):
+    """
+    A member of a consumer group.
+
+    :ivar str member_id: The unique identifier for the consumer. This is generated by the consumer and should be
+        unique across all consumers.
+    :ivar bytes member_metadata: Any additional metadata that the consumer wants to send to the group coordinator
+    """
+
     member_id = attr.ib()
     member_metadata = attr.ib()
 
 
 @attr.s(frozen=True, slots=True)
 class _JoinGroupResponse(object):
+    """
+    A response from a coordinator group.
+
+    :ivar int error: The error code for the request
+    :ivar str generation_id: The unique identifier for the consumer group
+    :ivar str group_protocol: The unique name for class of protocols implemented by the consumer
+    :ivar str leader_id: The unique identifier for the consumer that is the leader of the group
+    :ivar str member_id: The unique identifier for the consumer. This is generated by the consumer and should be
+        unique across all consumers.
+    :ivar List[_JoinGroupResponseMember] members: The list of members in the group
+    """
+
     error = attr.ib()
     generation_id = attr.ib()
     group_protocol = attr.ib()
@@ -126,12 +466,28 @@ class _JoinGroupResponse(object):
 
 @attr.s(frozen=True, slots=True)
 class _SyncGroupRequestMember(object):
+    """
+    A member of a consumer group.
+
+    :ivar str member_id: The unique identifier for the consumer. This is generated by the consumer and should be
+        unique across all consumers.
+    :ivar bytes member_metadata: Any additional metadata that the consumer wants to send to the group coordinator
+    """
+
     member_id = attr.ib()
     member_metadata = attr.ib()
 
 
 @attr.s(frozen=True, slots=True)
 class _SyncGroupMemberAssignment(object):
+    """
+    The assignment for a member of a consumer group.
+
+    :ivar str version: The version of the protocol
+    :ivar bytes assignments: The assignment for the member
+    :ivar bytes user_data: Any additional metadata that the consumer wants to send to the group coordinator
+    """
+
     version = attr.ib()
     assignments = attr.ib()
     user_data = attr.ib()
@@ -139,6 +495,16 @@ class _SyncGroupMemberAssignment(object):
 
 @attr.s(frozen=True, slots=True)
 class _SyncGroupRequest(object):
+    """
+    A request to sync with a consumer group.
+
+    :ivar str group: The name of the group to sync with
+    :ivar int generation_id: The generation id for the consumer group
+    :ivar str member_id: The unique identifier for the consumer. This is generated by the consumer and should be
+        unique across all consumers.
+    :ivar List[_SyncGroupRequestMember] group_assignment: The list of members in the group
+    """
+
     group = attr.ib()
     generation_id = attr.ib()
     member_id = attr.ib()
@@ -147,25 +513,113 @@ class _SyncGroupRequest(object):
 
 @attr.s(frozen=True, slots=True)
 class _SyncGroupResponse(object):
+    """
+    A response from a consumer group sync.
+
+    :ivar int error: The error code for the request
+    :ivar bytes member_assignment: The assignment for the member
+    """
+
     error = attr.ib()
     member_assignment = attr.ib()
 
 
-_HeartbeatRequest = namedtuple("_HeartbeatRequest", ["group", "generation_id", "member_id"])
-_HeartbeatResponse = namedtuple("_HeartbeatResponse", ["error"])
+@attr.s(frozen=True, slots=True)
+class _HeartbeatRequest(BaseStruct):
+    """
+    A request to send a heartbeat to a consumer group coordinator.
 
-_LeaveGroupRequest = namedtuple("_LeaveGroupRequest", ["group", "member_id"])
-_LeaveGroupResponse = namedtuple("_LeaveGroupResponse", ["error"])
+    :ivar str group: The name of the group to send the heartbeat to
+    :ivar int generation_id: The generation id for the consumer group
+    :ivar str member_id: The unique identifier for the consumer. This is generated by the consumer and should be
+        unique across all consumers.
+    """
+
+    group = attr.ib()
+    generation_id = attr.ib()
+    member_id = attr.ib()
+
+
+@attr.s(frozen=True, slots=True)
+class _HeartbeatResponse(BaseStruct):
+    """
+    A response from a consumer group heartbeat.
+
+    :ivar int error: The error code for the request
+    """
+
+    error = attr.ib()
+
+
+@attr.s(frozen=True, slots=True)
+class _LeaveGroupRequest(BaseStruct):
+    """
+    A request to leave a consumer group.
+
+    :ivar str group: The name of the group to leave
+    :ivar str member_id: The unique identifier for the consumer. This is generated by the consumer and should be
+        unique across all consumers.
+    """
+
+    group = attr.ib()
+    member_id = attr.ib()
+
+
+@attr.s(frozen=True, slots=True)
+class _LeaveGroupResponse(BaseStruct):
+    """
+    A response from a consumer group leave.
+
+    :ivar int error: The error code for the request
+    """
+
+    error = attr.ib()
+
 
 # Other useful structs
-OffsetAndMessage = namedtuple("OffsetAndMessage", ["offset", "message"])
+@attr.s(frozen=True, slots=True)
+class OffsetAndMessage(BaseStruct):
+    """
+    A message with an associated offset.
+
+    :ivar int offset: The offset of the message
+    :ivar kafka.protocol.message.Message message: The message
+    """
+
+    offset = attr.ib()
+    message = attr.ib()
 
 
-TopicAndPartition = namedtuple("TopicAndPartition", ["topic", "partition"])
-SourcedMessage = namedtuple("SourcedMessage", TopicAndPartition._fields + OffsetAndMessage._fields)
+@attr.s(frozen=True, slots=True)
+class TopicAndPartition(BaseStruct):
+    """
+    A topic and partition.
+
+    :ivar str topic: The name of the topic
+    :ivar int partition: The partition id
+    """
+
+    topic = attr.ib()
+    partition = attr.ib()
 
 
-class Message(namedtuple("Message", ["magic", "attributes", "key", "value"])):
+@attr.s(frozen=True, slots=True)
+class SourcedMessage(BaseStruct):
+    """
+    A message with an associated offset, topic, and partition.
+
+    :ivar str topic: The name of the topic
+    :ivar int partition: The partition id
+    """
+
+    topic = attr.ib()
+    partition = attr.ib()
+    offset = attr.ib()
+    message = attr.ib()
+
+
+@attr.s(frozen=True, slots=True, repr=False)
+class Message(BaseStruct):
     """
     A Kafka `message`_ in format 0.
 
@@ -180,7 +634,10 @@ class Message(namedtuple("Message", ["magic", "attributes", "key", "value"])):
     .. _message: https://kafka.apache.org/documentation/#messageset
     """
 
-    __slots__ = ()
+    magic = attr.ib()
+    attributes = attr.ib()
+    key = attr.ib()
+    value = attr.ib()
 
     def __repr__(self):
         bits = ["<Message v0"]
