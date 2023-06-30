@@ -17,6 +17,7 @@
 # fmt: off
 import logging
 import struct
+import time
 import zlib
 from binascii import hexlify
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
@@ -39,6 +40,7 @@ from .common import (
     CODEC_GZIP,
     CODEC_NONE,
     CODEC_SNAPPY,
+    ApiVersion,
     ApiVersionRequest,
     ApiVersionResponse,
     BrokerMetadata,
@@ -278,13 +280,13 @@ class KafkaCodec(object):
                 request_key,  # ApiKey
                 api_version,  # ApiVersion
                 correlation_id,  # CorrelationId
-                len(client_id),
+                len(client_id),  # ClientId size
             )
-            + client_id  # ClientId size
-        )  # ClientId
+            + client_id  # ClientId
+        )
 
     @classmethod
-    def _encode_message_set(cls, messages: List[Message], offset: int = None):
+    def _encode_message_set(cls, messages: List[Message], offset: int = None, magic: int = 0):
         """
         Encode a MessageSet. Unlike other arrays in the protocol,
         MessageSets are not length-prefixed.  Format::
@@ -299,7 +301,10 @@ class KafkaCodec(object):
             incr = 0
             offset = 0
         for message in messages:
-            encoded_message = KafkaCodec._encode_message(message)
+            if magic == 0:
+                encoded_message = KafkaCodec._encode_message(message)
+            elif magic == 1:
+                encoded_message = KafkaCodec._encode_message(message)
             message_set.append(struct.pack(">qi", offset, len(encoded_message)))
             message_set.append(encoded_message)
             offset += incr
@@ -311,23 +316,45 @@ class KafkaCodec(object):
         Encode a single message.
 
         The magic number of a message is a format version number.  The only
-        supported magic number right now is zero.  Format::
+        supported magic number right now is zero and one.  Format::
 
-            Message => Crc MagicByte Attributes Key Value
-              Crc => int32
-              MagicByte => int8
-              Attributes => int8
-              Key => bytes
-              Value => bytes
+            v0:=
+                Message => Crc MagicByte Attributes Key Value
+                  Crc => int32
+                  MagicByte => int8
+                  Attributes => int8
+                  Key => bytes
+                  Value => bytes
+
+            v1:=
+                Message => Crc MagicByte Attributes Timestamp Key Value
+                  Crc => int32
+                  MagicByte => int8
+                  Attributes => int8
+                  Timestamp => int64
+                  Key => bytes
+                  Value => bytes
+
         """
         if message.magic == 0:
-            msg = struct.pack(">BB", message.magic, message.attributes)
+            msg = struct.pack('>BB', message.magic, message.attributes)
             msg += write_int_string(message.key)
             msg += write_int_string(message.value)
             crc = zlib.crc32(msg) & 0xFFFFFFFF  # Ensure unsigned
-            msg = struct.pack(">I", crc) + msg
+            msg = struct.pack('>I', crc) + msg
+        elif message.magic == 1:
+            if message.timestamp is None:
+                ts = int(time.time() * 1000)
+                msg = struct.pack('>BBq', message.magic, message.attributes, ts)
+            else:
+                msg = struct.pack('>BBq', message.magic, message.attributes, message.timestamp)
+            msg += write_int_string(message.key)
+            msg += write_int_string(message.value)
+            crc = zlib.crc32(msg) & 0xFFFFFFFF
+            msg = struct.pack('>I', crc) + msg
         else:
             raise ProtocolError("Unexpected magic number: %d" % message.magic)
+
         return msg
 
     @classmethod
@@ -380,26 +407,57 @@ class KafkaCodec(object):
         if crc != zlib.crc32(data[4:]) & 0xFFFFFFFF:
             raise ChecksumError("Message checksum failed")
 
-        (key, cur) = read_int_string(data, cur)
-        (value, cur) = read_int_string(data, cur)
+        def v0(data, offset, cur):
+            (key, cur) = read_int_string(data, cur)
+            (value, cur) = read_int_string(data, cur)
 
-        codec = att & ATTRIBUTE_CODEC_MASK
+            codec = att & ATTRIBUTE_CODEC_MASK
 
-        if codec == CODEC_NONE:
-            yield offset, Message(magic, att, key, value)
+            if codec == CODEC_NONE:
+                yield offset, Message(magic, att, key, value)
 
-        elif codec == CODEC_GZIP:
-            gz = gzip_decode(value)
-            for offset, msg in KafkaCodec._decode_message_set_iter(gz):
-                yield offset, msg
+            elif codec == CODEC_GZIP:
+                gz = gzip_decode(value)
+                for offset, msg in KafkaCodec._decode_message_set_iter(gz):
+                    yield offset, msg
 
-        elif codec == CODEC_SNAPPY:
-            snp = snappy_decode(value)
-            for offset, msg in KafkaCodec._decode_message_set_iter(snp):
-                yield offset, msg
+            elif codec == CODEC_SNAPPY:
+                snp = snappy_decode(value)
+                for offset, msg in KafkaCodec._decode_message_set_iter(snp):
+                    yield offset, msg
 
+            else:
+                raise ProtocolError("Unsupported codec 0b{:b}".format(codec))
+
+        def v1(data, offset, cur):
+            (timestamp, cur) = relative_unpack(">q", data, cur)
+            (key, cur) = read_int_string(data, cur)
+            (value, cur) = read_int_string(data, cur)
+
+            codec = att & ATTRIBUTE_CODEC_MASK
+
+            if codec == CODEC_NONE:
+                yield offset, Message(magic, att, key, value, timestamp)
+
+            elif codec == CODEC_GZIP:
+                gz = gzip_decode(value)
+                for offset, msg in KafkaCodec._decode_message_set_iter(gz):
+                    yield offset, msg
+
+            elif codec == CODEC_SNAPPY:
+                snp = snappy_decode(value)
+                for offset, msg in KafkaCodec._decode_message_set_iter(snp):
+                    yield offset, msg
+
+            else:
+                raise ProtocolError("Unsupported codec 0b{:b}".format(codec))
+
+        if magic == 0:
+            return v0(data, offset, cur)
+        elif magic == 1:
+            return v1(data, offset, cur)
         else:
-            raise ProtocolError("Unsupported codec 0b{:b}".format(codec))
+            raise ChecksumError("Message checksum failed")
 
     ##################
     #   Public API   #
@@ -440,7 +498,7 @@ class KafkaCodec(object):
         api_versions = []
 
         for api_key, min_version, max_version in struct.iter_unpack(">hhh", data[cur:]):
-            api_versions.append((api_key, min_version, max_version))
+            api_versions.append(ApiVersion(api_key, min_version, max_version))
 
         return ApiVersionResponse(error_code, api_versions)
 
@@ -462,6 +520,7 @@ class KafkaCodec(object):
         payloads: Optional[List[ProduceRequest]] = None,
         acks: int = 1,
         timeout: int = DEFAULT_REPLICAS_ACK_TIMEOUT_MSECS,
+        api_version: int = 0,
     ):
         """
         Encode some ProduceRequest structs
@@ -481,13 +540,24 @@ class KafkaCodec(object):
         :param int timeout:
             Maximum time the server will wait for acks from replicas.  This is
             _not_ a socket timeout.
+        :param int api_version: Kafka API version to use
         """
         if not isinstance(client_id, bytes):
             raise TypeError("client_id={!r} should be bytes".format(client_id))
         payloads = [] if payloads is None else payloads
         grouped_payloads = group_by_topic_and_partition(payloads)
 
-        message = cls._encode_message_header(client_id, correlation_id, KafkaCodec.PRODUCE_KEY)
+        # override the api_version instead of passing it directly for now since we only support 2 versions
+        if api_version >= 2:
+            req_api_version = 2
+            magic = 1
+        else:
+            req_api_version = api_version
+            magic = 0
+
+        message = cls._encode_message_header(
+            client_id, correlation_id, KafkaCodec.PRODUCE_KEY, api_version=req_api_version
+        )
 
         message += struct.pack(">hii", acks, timeout, len(grouped_payloads))
 
@@ -496,29 +566,67 @@ class KafkaCodec(object):
 
             message += struct.pack(">i", len(topic_payloads))
             for partition, payload in topic_payloads.items():
-                msg_set = KafkaCodec._encode_message_set(payload.messages)
+                msg_set = KafkaCodec._encode_message_set(payload.messages, magic=magic)
                 message += struct.pack(">ii", partition, len(msg_set))
                 message += msg_set
 
         return message
 
     @classmethod
-    def decode_produce_response(cls, data: bytes) -> Iterator[ProduceResponse]:
+    def decode_produce_response(cls, data: bytes, api_version: int = 0) -> Iterator[ProduceResponse]:
         """
         Decode bytes to a ProduceResponse
 
         :param bytes data: bytes to decode
+        :param int api_version: Kafka API version to use
         :returns: iterable of `afkak.common.ProduceResponse`
         """
-        ((correlation_id, num_topics), cur) = relative_unpack(">ii", data, 0)
 
-        for _i in range(num_topics):
-            topic, cur = read_short_ascii(data, cur)
-            ((num_partitions,), cur) = relative_unpack(">i", data, cur)
-            for _i in range(num_partitions):
-                ((partition, error, offset), cur) = relative_unpack(">ihq", data, cur)
+        def v0(data):
+            ((correlation_id, num_topics), cur) = relative_unpack(">ii", data, 0)
 
-                yield ProduceResponse(topic, partition, error, offset)
+            for _i in range(num_topics):
+                topic, cur = read_short_ascii(data, cur)
+                ((num_partitions,), cur) = relative_unpack(">i", data, cur)
+                for _i in range(num_partitions):
+                    ((partition, error, offset), cur) = relative_unpack(">ihq", data, cur)
+
+                    yield ProduceResponse(topic, partition, error, offset)
+
+        def v2(data):
+            """
+            schema:
+
+            Produce Response (Version: 2) => [responses] throttle_time_ms
+              responses => name [partition_responses]
+                name => STRING
+                partition_responses => index error_code base_offset log_append_time_ms
+                  index => INT32
+                  error_code => INT16
+                  base_offset => INT64
+                  log_append_time_ms => INT64
+              throttle_time_ms => INT32
+
+            """
+            ((correlation_id, num_topics), cur) = relative_unpack(">ii", data, 0)
+
+            for _i in range(num_topics):
+                topic, cur = read_short_ascii(data, cur)
+                ((num_partitions,), cur) = relative_unpack(">i", data, cur)
+                for _i in range(num_partitions):
+                    ((partition, error, offset, log_append_time_ms), cur) = relative_unpack(">ihqq", data, cur)
+
+                    yield ProduceResponse(topic, partition, error, offset)
+
+            throttle_time_ms, cur = relative_unpack(">i", data, cur)
+
+        if api_version == 0:
+            return v0(data)
+        elif api_version >= 1:
+            # TODO: handle/use throttle_time_ms?
+            return v2(data)
+        else:
+            raise ValueError(f"Unsupported API version: {api_version}")
 
     @classmethod
     def encode_fetch_request(
@@ -528,6 +636,7 @@ class KafkaCodec(object):
         payloads: Optional[List[FetchRequest]],
         max_wait_time: int = 100,
         min_bytes: int = 4096,
+        api_version: int = 0,
     ) -> bytes:
         """
         Encodes some FetchRequest structs
@@ -539,11 +648,20 @@ class KafkaCodec(object):
         :param int min_bytes:
             the minimum number of bytes to accumulate before returning the
             response
+        :param int api_version: Kafka API version to use
         """
         payloads = [] if payloads is None else payloads
         grouped_payloads = group_by_topic_and_partition(payloads)
 
-        message = cls._encode_message_header(client_id, correlation_id, KafkaCodec.FETCH_KEY)
+        # override the api_version instead of passing it directly for now since we only support 2 versions
+        if api_version >= 2:
+            req_api_version = 2
+        else:
+            req_api_version = api_version
+
+        message = cls._encode_message_header(
+            client_id, correlation_id, KafkaCodec.FETCH_KEY, api_version=req_api_version
+        )
 
         assert isinstance(max_wait_time, int)
 
@@ -559,13 +677,17 @@ class KafkaCodec(object):
         return message
 
     @classmethod
-    def decode_fetch_response(cls, data: bytes) -> Iterator[FetchResponse]:
+    def decode_fetch_response(cls, data: bytes, api_version: int = 0) -> Iterator[FetchResponse]:
         """
         Decode bytes to a FetchResponse
 
         :param bytes data: bytes to decode
+        :param int api_version: Kafka API version to use
         """
-        ((correlation_id, num_topics), cur) = relative_unpack(">ii", data, 0)
+        if api_version == 0:
+            ((correlation_id, num_topics), cur) = relative_unpack(">ii", data, 0)
+        elif api_version >= 2:
+            ((correlation_id, throttle_time_ms, num_topics), cur) = relative_unpack(">iii", data, 0)
 
         for _i in range(num_topics):
             (topic, cur) = read_short_ascii(data, cur)
@@ -1028,7 +1150,7 @@ class KafkaCodec(object):
         return _SyncGroupMemberAssignment(version, assignments, user_data)
 
 
-def create_message(payload: bytes, key: bytes = None) -> Message:
+def create_message(payload: bytes, key: bytes = None, magic: int = 0) -> Message:
     """
     Construct a :class:`Message`
 
@@ -1037,13 +1159,20 @@ def create_message(payload: bytes, key: bytes = None) -> Message:
     :param key: A key used to route the message when partitioning and to
         determine message identity on a compacted topic.
     :type key: :class:`bytes` or ``None``
+    :param magic: The message version.  Supported message versions are 0 and 1.
+    :type magic: :class:`int`
     """
     assert payload is None or isinstance(payload, bytes), "payload={!r} should be bytes or None".format(payload)
     assert key is None or isinstance(key, bytes), "key={!r} should be bytes or None".format(key)
-    return Message(0, 0, key, payload)
+    assert magic in (0, 1), "magic={!r} should be 0 or 1".format(magic)
+    if magic == 1:
+        ts = int(time.time() * 1000)
+        return Message(magic, 0, key, payload, timestamp=ts)
+    else:
+        return Message(magic, 0, key, payload)
 
 
-def create_gzip_message(message_set: List[Message]) -> Message:
+def create_gzip_message(message_set: List[Message], magic: int = 0) -> Message:
     """
     Construct a gzip-compressed message containing multiple messages
 
@@ -1051,14 +1180,19 @@ def create_gzip_message(message_set: List[Message]) -> Message:
     message to Kafka.
 
     :param list message_set: a list of :class:`Message` instances
+    :param int magic: The message version.  Supported message versions are 0 and 1.
     """
     encoded_message_set = KafkaCodec._encode_message_set(message_set)
 
     gzipped = gzip_encode(encoded_message_set)
-    return Message(0, CODEC_GZIP, None, gzipped)
+    if magic == 1:
+        ts = int(time.time() * 1000)
+        return Message(magic, CODEC_GZIP, None, gzipped, timestamp=ts)
+    else:
+        return Message(magic, CODEC_GZIP, None, gzipped)
 
 
-def create_snappy_message(message_set: List[Message]) -> Message:
+def create_snappy_message(message_set: List[Message], magic: int = 0) -> Message:
     """
     Construct a Snappy-compressed message containing multiple messages
 
@@ -1066,13 +1200,18 @@ def create_snappy_message(message_set: List[Message]) -> Message:
     message to Kafka.
 
     :param list message_set: a list of :class:`Message` instances
+    :param int magic: The message version.  Supported message versions are 0 and 1.
     """
     encoded_message_set = KafkaCodec._encode_message_set(message_set)
     snapped = snappy_encode(encoded_message_set)
-    return Message(0, CODEC_SNAPPY, None, snapped)
+    if magic == 1:
+        ts = int(time.time() * 1000)
+        return Message(magic, CODEC_SNAPPY, None, snapped, timestamp=ts)
+    else:
+        return Message(magic, CODEC_SNAPPY, None, snapped)
 
 
-def create_message_set(requests: List[ProduceRequest], codec: int = CODEC_NONE) -> List[Message]:
+def create_message_set(requests: List[ProduceRequest], codec: int = CODEC_NONE, magic: int = 0) -> List[Message]:
     """
     Create a message set from a list of requests.
 
@@ -1089,17 +1228,22 @@ def create_message_set(requests: List[ProduceRequest], codec: int = CODEC_NONE) 
         - `afkak.CODEC_GZIP`
         - `afkak.CODEC_SNAPPY`
 
+    :param magic: The message version.  Supported message versions are 0 and 1.
+
     :raises: :exc:`UnsupportedCodecError` for an unsupported codec
     """
     msglist = []
     for req in requests:
-        msglist.extend([create_message(m, key=req.key) for m in req.messages])
+        if magic == 1:
+            msglist.extend([create_message(m, key=req.key, magic=1) for m in req.messages])
+        else:
+            msglist.extend([create_message(m, key=req.key) for m in req.messages])
 
     if codec == CODEC_NONE:
         return msglist
     elif codec == CODEC_GZIP:
-        return [create_gzip_message(msglist)]
+        return [create_gzip_message(msglist, magic)]
     elif codec == CODEC_SNAPPY:
-        return [create_snappy_message(msglist)]
+        return [create_snappy_message(msglist, magic)]
     else:
         raise UnsupportedCodecError("Codec 0x%02x unsupported" % codec)
