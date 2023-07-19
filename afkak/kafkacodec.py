@@ -20,6 +20,7 @@ import struct
 import time
 import zlib
 from binascii import hexlify
+from io import BytesIO
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 import attr
@@ -60,7 +61,6 @@ from .common import (
     OffsetRequest,
     OffsetResponse,
     PartitionMetadata,
-    ProduceRequest,
     ProduceResponse,
     ProtocolError,
     TopicMetadata,
@@ -77,6 +77,8 @@ from .common import (
     _SyncGroupRequest,
     _SyncGroupResponse,
 )
+from .protocol.api import ResponseHeaders
+from .protocol.produce import PartitionMessage, ProduceRequest, ProduceRequestV3, ProduceRequests, ProduceResponses, TopicPartition
 from twisted.python.compat import nativeString
 
 # fmt: on
@@ -559,17 +561,18 @@ class KafkaCodec(object):
             client_id, correlation_id, KafkaCodec.PRODUCE_KEY, api_version=req_api_version
         )
 
-        message += struct.pack(">hii", acks, timeout, len(grouped_payloads))
+        produce_req = ProduceRequest(acks=acks, timeout=timeout)
 
         for topic, topic_payloads in grouped_payloads.items():
-            message += write_short_ascii(topic)
+            topic_partitions = TopicPartition(topic)
 
-            message += struct.pack(">i", len(topic_payloads))
             for partition, payload in topic_payloads.items():
-                msg_set = KafkaCodec._encode_message_set(payload.messages, magic=magic)
-                message += struct.pack(">ii", partition, len(msg_set))
-                message += msg_set
+                msg_set = KafkaCodec._encode_message_set(payload.messages, magic)
+                topic_partitions.partitions.append(PartitionMessage(partition, msg_set))
 
+            produce_req.topics.append(topic_partitions)
+
+        message += ProduceRequests[req_api_version].schema.encode(produce_req)
         return message
 
     @classmethod
@@ -582,51 +585,21 @@ class KafkaCodec(object):
         :returns: iterable of `afkak.common.ProduceResponse`
         """
 
-        def v0(data):
-            ((correlation_id, num_topics), cur) = relative_unpack(">ii", data, 0)
+        if isinstance(data, bytes):
+            data = BytesIO(data)
 
-            for _i in range(num_topics):
-                topic, cur = read_short_ascii(data, cur)
-                ((num_partitions,), cur) = relative_unpack(">i", data, cur)
-                for _i in range(num_partitions):
-                    ((partition, error, offset), cur) = relative_unpack(">ihq", data, cur)
+        header_handler = ResponseHeaders[0].schema.decode(data)
+        correlation_id = header_handler[0]
 
-                    yield ProduceResponse(topic, partition, error, offset)
-
-        def v2(data):
-            """
-            schema:
-
-            Produce Response (Version: 2) => [responses] throttle_time_ms
-              responses => name [partition_responses]
-                name => STRING
-                partition_responses => index error_code base_offset log_append_time_ms
-                  index => INT32
-                  error_code => INT16
-                  base_offset => INT64
-                  log_append_time_ms => INT64
-              throttle_time_ms => INT32
-
-            """
-            ((correlation_id, num_topics), cur) = relative_unpack(">ii", data, 0)
-
-            for _i in range(num_topics):
-                topic, cur = read_short_ascii(data, cur)
-                ((num_partitions,), cur) = relative_unpack(">i", data, cur)
-                for _i in range(num_partitions):
-                    ((partition, error, offset, log_append_time_ms), cur) = relative_unpack(">ihqq", data, cur)
-
-                    yield ProduceResponse(topic, partition, error, offset)
-
-            throttle_time_ms, cur = relative_unpack(">i", data, cur)
-
-        if api_version == 0:
-            return v0(data)
-        elif api_version >= 1:
-            # TODO: handle/use throttle_time_ms?
-            return v2(data)
-        else:
-            raise ValueError(f"Unsupported API version: {api_version}")
+        # TODO: This is a hack to get the correct response handler to be removed when record batch is supported
+        resp_handler = ProduceResponses[2]()
+        decode = resp_handler.schema.decode(data)
+        resp = resp_handler.to_object(decode)
+        for topic in resp.topics:
+            for partition_data in topic.partitions:
+                yield ProduceResponse(
+                    topic.topic, partition_data.partition, partition_data.error_code, partition_data.offset
+                )
 
     @classmethod
     def encode_fetch_request(
