@@ -61,6 +61,7 @@ from .common import (
     OffsetRequest,
     OffsetResponse,
     PartitionMetadata,
+    ProduceRequest,
     ProduceResponse,
     ProtocolError,
     TopicMetadata,
@@ -78,7 +79,14 @@ from .common import (
     _SyncGroupResponse,
 )
 from .protocol.api import ResponseHeaders
-from .protocol.produce import PartitionMessage, ProduceRequest, ProduceRequestV3, ProduceRequests, ProduceResponses, TopicPartition
+from .protocol.fetch import (
+    FetchRequestBuilder,
+    FetchRequestBuilderTopic,
+    FetchRequestBuilderTopicPartition,
+    FetchRequests,
+    FetchResponses,
+)
+from .protocol.produce import PartitionMessage, ProduceRequestBuilder, ProduceRequests, ProduceResponses, TopicPartition
 from twisted.python.compat import nativeString
 
 # fmt: on
@@ -561,7 +569,7 @@ class KafkaCodec(object):
             client_id, correlation_id, KafkaCodec.PRODUCE_KEY, api_version=req_api_version
         )
 
-        produce_req = ProduceRequest(acks=acks, timeout=timeout)
+        produce_req = ProduceRequestBuilder(acks=acks, timeout=timeout)
 
         for topic, topic_payloads in grouped_payloads.items():
             topic_partitions = TopicPartition(topic)
@@ -592,7 +600,10 @@ class KafkaCodec(object):
         correlation_id = header_handler[0]
 
         # TODO: This is a hack to get the correct response handler to be removed when record batch is supported
-        resp_handler = ProduceResponses[2]()
+        if api_version >= 2:
+            resp_handler = ProduceResponses[2]()
+        else:
+            resp_handler = ProduceResponses[api_version]()
         decode = resp_handler.schema.decode(data)
         resp = resp_handler.to_object(decode)
         for topic in resp.topics:
@@ -609,6 +620,7 @@ class KafkaCodec(object):
         payloads: Optional[List[FetchRequest]],
         max_wait_time: int = 100,
         min_bytes: int = 4096,
+        max_bytes: int = 1048576,
         api_version: int = 0,
     ) -> bytes:
         """
@@ -638,14 +650,17 @@ class KafkaCodec(object):
 
         assert isinstance(max_wait_time, int)
 
-        # -1 is the replica id
-        message += struct.pack(">iiii", -1, max_wait_time, min_bytes, len(grouped_payloads))
+        fetch_req = FetchRequestBuilder(max_wait_time=max_wait_time, min_bytes=min_bytes, replica_id=-1)
 
         for topic, topic_payloads in grouped_payloads.items():
-            message += write_short_ascii(topic)
-            message += struct.pack(">i", len(topic_payloads))
+            topic_req = FetchRequestBuilderTopic(topic)
             for partition, payload in topic_payloads.items():
-                message += struct.pack(">iqi", partition, payload.offset, payload.max_bytes)
+                topic_req.partitions.append(
+                    FetchRequestBuilderTopicPartition(partition, payload.offset, payload.max_bytes)
+                )
+            fetch_req.topics.append(topic_req)
+
+        message += FetchRequests[req_api_version].schema.encode(fetch_req)
 
         return message
 
@@ -657,26 +672,27 @@ class KafkaCodec(object):
         :param bytes data: bytes to decode
         :param int api_version: Kafka API version to use
         """
-        if api_version == 0:
-            ((correlation_id, num_topics), cur) = relative_unpack(">ii", data, 0)
-        elif api_version >= 2:
-            ((correlation_id, throttle_time_ms, num_topics), cur) = relative_unpack(">iii", data, 0)
+        if isinstance(data, bytes):
+            data = BytesIO(data)
 
-        for _i in range(num_topics):
-            (topic, cur) = read_short_ascii(data, cur)
-            ((num_partitions,), cur) = relative_unpack(">i", data, cur)
+        header_handler = ResponseHeaders[0].schema.decode(data)
+        correlation_id = header_handler[0]
 
-            for _i in range(num_partitions):
-                ((partition, error, highwater_mark_offset), cur) = relative_unpack(">ihq", data, cur)
-
-                (message_set, cur) = read_int_string(data, cur)
-
+        if api_version >= 2:
+            resp_handler = FetchResponses[2]()
+        else:
+            resp_handler = FetchResponses[api_version]()
+        decode = resp_handler.schema.decode(data)
+        resp = resp_handler.to_object(decode)
+        for topic in resp.topics:
+            for partition_data in topic.partitions:
+                msgs = KafkaCodec._decode_message_set_iter(partition_data.message_set)
                 yield FetchResponse(
-                    topic,
-                    partition,
-                    error,
-                    highwater_mark_offset,
-                    KafkaCodec._decode_message_set_iter(message_set),
+                    topic.topic,
+                    partition_data.partition,
+                    partition_data.error_code,
+                    partition_data.highwater_offset,
+                    msgs,
                 )
 
     @classmethod
