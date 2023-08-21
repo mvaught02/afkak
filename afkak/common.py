@@ -43,7 +43,7 @@ _ALL_CODECS = (CODEC_NONE, CODEC_GZIP, CODEC_SNAPPY)
 ###############
 
 
-@attr.frozen(hash=False, eq=False)
+@attr.s(hash=False, eq=False)
 class BaseStruct:
     """
     Base class for all structs.
@@ -63,9 +63,6 @@ class BaseStruct:
         if isinstance(other, self.__class__):
             return attr.astuple(self) == attr.astuple(other)
         return NotImplemented
-
-    def __hash__(self):
-        return hash(attr.astuple(self))
 
     def __lt__(self, other):
         if isinstance(other, self.__class__):
@@ -634,7 +631,7 @@ class SourcedMessage(BaseStruct):
     message = attr.ib()
 
 
-@attr.s(frozen=True, slots=True, repr=False)
+@attr.s(slots=True, repr=False)
 class Message(BaseStruct):
     """
     A Kafka `message`_ in format 1.

@@ -59,7 +59,7 @@ class TestConsumerIntegration(IntegrationMixin, unittest.TestCase):
         self.assertEqual(len(messages), num_messages)
 
         # Make sure there are no duplicates
-        self.assertEqual(len(set(messages)), num_messages)
+        assert all(messages.count(x) == 1 for x in messages)
 
     @kafka_versions("all")
     @inlineCallbacks

@@ -360,7 +360,7 @@ class TestKafkaCodec(TestCase):
     # NOTE: The error handling in _decode_message_set_iter() is questionable.
     # If it's modified, the next two tests might need to be fixed.
     def test_decode_message_set_fetch_size_too_small(self):
-        self.assertRaises(ConsumerFetchSizeTooSmall, list, KafkaCodec._decode_message_set_iter("a"))
+        self.assertRaises(ConsumerFetchSizeTooSmall, list, KafkaCodec._decode_message_set_iter(b"a"))
 
     def test_decode_message_set_stop_iteration(self):
         encoded = b"".join(

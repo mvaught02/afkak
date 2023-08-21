@@ -42,6 +42,8 @@ from twisted.internet.defer import Deferred, DeferredList, fail, inlineCallbacks
 from twisted.internet.task import LoopingCall
 from twisted.python.failure import Failure
 
+from .records.memory_records import MemoryRecordsBuilder
+
 log = logging.getLogger(__name__)
 log.addHandler(logging.NullHandler())
 
@@ -381,10 +383,27 @@ class Producer(object):
         # payload (topic/partition) level.
         payloads = []
         for (topic, partition), reqs in reqsByTopicPart.items():
-            if self.client._api_versions != 0:
-                msgSet = create_message_set(reqs, self.codec, magic=1)
+            if self.client._api_versions == 0:
+                version = 0
             else:
-                msgSet = create_message_set(reqs, self.codec)
+                api_ver = yield self.client.get_api_version(0)
+                if api_ver in (1, 2):
+                    version = 1
+                else:
+                    version = 2
+            builder = MemoryRecordsBuilder(compression_type=self.codec, magic=version)
+            for req in reqs:
+                key = req.key.encode('utf-8') if req.key else None
+                value = req.value.encode('utf-8') if req.value else None
+                builder.append(
+                    timestamp=None,  # And also timestamp, if necessary
+                    key=key,
+                    value=value,
+                    headers=[],  # You can also provide headers here
+                )
+            msgSet = builder.build()
+            builder.close()
+
             req = ProduceRequest(topic, partition, msgSet)
             topicPart = TopicAndPartition(topic, partition)
             payloads.append(req)

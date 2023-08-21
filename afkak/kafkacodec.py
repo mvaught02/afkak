@@ -24,6 +24,8 @@ from io import BytesIO
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 import attr
+from twisted.python.compat import nativeString
+
 from ._util import (
     group_by_topic_and_partition,
     read_int_string,
@@ -84,10 +86,11 @@ from .protocol.fetch import (
     FetchRequestBuilderTopic,
     FetchRequestBuilderTopicPartition,
     FetchRequests,
-    FetchResponses,
+    FetchResponses, FetchRequestBuilderV7,
 )
+from .protocol.message import Messages
 from .protocol.produce import PartitionMessage, ProduceRequestBuilder, ProduceRequests, ProduceResponses, TopicPartition
-from twisted.python.compat import nativeString
+from .records.legacy_records import LegacyRecordBatch, LegacyRecord, LegacyRecordMetadata, LegacyRecordBatchBuilder
 
 # fmt: on
 
@@ -296,7 +299,7 @@ class KafkaCodec(object):
         )
 
     @classmethod
-    def _encode_message_set(cls, messages: List[Message], offset: int = None, magic: int = 0):
+    def _encode_message_set(cls, messages: List[Message], offset: int = None):
         """
         Encode a MessageSet. Unlike other arrays in the protocol,
         MessageSets are not length-prefixed.  Format::
@@ -311,10 +314,7 @@ class KafkaCodec(object):
             incr = 0
             offset = 0
         for message in messages:
-            if magic == 0:
-                encoded_message = KafkaCodec._encode_message(message)
-            elif magic == 1:
-                encoded_message = KafkaCodec._encode_message(message)
+            encoded_message = KafkaCodec._encode_message(message)
             message_set.append(struct.pack(">qi", offset, len(encoded_message)))
             message_set.append(encoded_message)
             offset += incr
@@ -346,29 +346,15 @@ class KafkaCodec(object):
                   Value => bytes
 
         """
-        if message.magic == 0:
-            msg = struct.pack('>BB', message.magic, message.attributes)
-            msg += write_int_string(message.key)
-            msg += write_int_string(message.value)
-            crc = zlib.crc32(msg) & 0xFFFFFFFF  # Ensure unsigned
-            msg = struct.pack('>I', crc) + msg
-        elif message.magic == 1:
-            if message.timestamp is None:
-                ts = int(time.time() * 1000)
-                msg = struct.pack('>BBq', message.magic, message.attributes, ts)
-            else:
-                msg = struct.pack('>BBq', message.magic, message.attributes, message.timestamp)
-            msg += write_int_string(message.key)
-            msg += write_int_string(message.value)
-            crc = zlib.crc32(msg) & 0xFFFFFFFF
-            msg = struct.pack('>I', crc) + msg
-        else:
+        if message.magic not in (0, 1):
             raise ProtocolError("Unexpected magic number: %d" % message.magic)
+        msg_handler = Messages[message.magic]
+        msg = msg_handler.encoder.encode(message)
 
         return msg
 
     @classmethod
-    def _decode_message_set_iter(cls, data: bytes) -> Iterator[Tuple[int, Message]]:
+    def _decode_message_set_iter(cls, data: bytes) -> Iterator[OffsetAndMessage]:
         """
         Iteratively decode a MessageSet
 

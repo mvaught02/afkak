@@ -17,6 +17,8 @@
 import collections
 import struct
 
+import attr
+
 from .common import BufferUnderflowError
 
 _NULL_SHORT_STRING = struct.pack(">h", -1)
@@ -206,3 +208,30 @@ def group_by_topic_and_partition(tuples):
     for t in tuples:
         out[t.topic][t.partition] = t
     return out
+
+
+@attr.s
+class WeakMethod:
+    target = attr.ib()
+    method = attr.ib()
+    _target_id = attr.ib(init=False)
+    _method_id = attr.ib(init=False)
+
+    @_target_id.default
+    def _init_target_id(self):
+        return id(self.target())
+
+    @_method_id.default
+    def _init_method_id(self):
+        return id(self.method())
+
+    def __call__(self, *args, **kwargs):
+        return self.method()(self.target(), *args, **kwargs)
+
+    def __hash__(self):
+        return hash(self.target) ^ hash(self.method)
+
+    def __eq__(self, other):
+        if not isinstance(other, WeakMethod):
+            return False
+        return self._target_id == other._target_id and self._method_id == other._method_id

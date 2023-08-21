@@ -55,6 +55,14 @@ class Int32(BinaryCoder):
     struct_format = '>i'
 
 
+class UInt32(BinaryCoder):
+    """
+    Special case for an unsigned 32-bit integer. Commonly needed for the crc
+    """
+
+    struct_format = '>I'
+
+
 class Int64(BinaryCoder):
     struct_format = '>q'
 
